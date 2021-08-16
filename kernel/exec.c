@@ -56,6 +56,7 @@ exec(char *path, char **argv)
       goto bad;
     if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
       goto bad;
+    if(sz1>=PLIC) goto bad;
   }
   iunlockput(ip);
   end_op();
@@ -96,7 +97,13 @@ exec(char *path, char **argv)
     goto bad;
   if(copyout(pagetable, sp, (char *)ustack, (argc+1)*sizeof(uint64)) < 0)
     goto bad;
-
+  uvmunmap(p->proc_kpgtbl,0,PGROUNDUP(oldsz)/PGSIZE,0);
+  for(int j=0;j<sz;j+=PGSIZE){
+    pte_t *pte,*kpte;
+  pte = walk(pagetable,j,0);
+  kpte = walk(p->proc_kpgtbl,j,1);
+  *kpte = (*pte)&~PTE_U;
+  }
   // arguments to user main(argc, argv)
   // argc is returned via the system call return
   // value, which goes in a0.

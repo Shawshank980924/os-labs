@@ -247,6 +247,7 @@ void proc_freekpagetable(pagetable_t pagetable,uint64 stack, uint64 sz)
   uvmunmap(pagetable, KERNBASE, ((uint64)etext - KERNBASE)/PGSIZE, 0);
   uvmunmap(pagetable, (uint64)etext, (PHYSTOP - (uint64)etext)/PGSIZE, 0);
   uvmunmap(pagetable, PLIC, 0x400000/PGSIZE, 0);
+  uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0);
   uvmunmap(pagetable, stack, 1, 1);
   uvmfree(pagetable, 0);
 }
@@ -282,6 +283,10 @@ void userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  pte_t *pte,*kpte;
+  pte = walk(p->pagetable,0,0);
+  kpte = walk(p->proc_kpgtbl,0,1);
+  *kpte = (*pte)&~PTE_U;
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;     // user program counter
@@ -342,7 +347,12 @@ int fork(void)
   np->sz = p->sz;
 
   np->parent = p;
-
+  for(int j=0;j<np->sz;j+=PGSIZE){
+    pte_t *pte,*kpte;
+  pte = walk(np->pagetable,j,0);
+  kpte = walk(np->proc_kpgtbl,j,1);
+  *kpte = (*pte)&~PTE_U;
+  }
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
