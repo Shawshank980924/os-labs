@@ -1,0 +1,2 @@
+(gdb)set architecture riscv:rv64
+(gdb)target remote localhost:26000

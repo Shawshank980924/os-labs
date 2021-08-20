@@ -1,3 +1,4 @@
+
 //
 // formatted console output -- printf, panic.
 //
@@ -131,4 +132,13 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void backtrace(){
+  printf("backtrace:\n");
+  uint64 fp = r_fp();
+  uint64 page_top = PGROUNDUP(fp);
+  for(;fp<page_top;fp=*(uint64*)(fp-16)){
+    printf("%p\n",*(uint64*)(fp-8));
+  }
 }
