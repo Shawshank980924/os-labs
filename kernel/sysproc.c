@@ -43,12 +43,31 @@ sys_sbrk(void)
 {
   int addr;
   int n;
-
+  struct proc* p = myproc();
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+  //if(growproc(n) < 0)
+    //return -1;
+  if(n>=0){
+    if(addr+n>=MAXVA){
+      return addr;
+    }
+    else{
+      p->sz+=n;
+    }
+    
+  }
+  //减小内存空间时需要及时释放内存以及取消映射
+  else{
+    if(addr+n>=0){
+      p->sz = uvmdealloc(p->pagetable, p->sz, p->sz + n);
+    }
+    else{
+      p->sz = uvmdealloc(p->pagetable, p->sz, 0);
+    }
+    
+  }
   return addr;
 }
 

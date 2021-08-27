@@ -46,7 +46,7 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+  uint64 excp_code = r_scause();
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
@@ -67,7 +67,30 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else if(excp_code==13||excp_code==15){
+      uint64 va = r_stval();
+      if(va>=MAXVA){
+        printf("va>=MAXVA\n");
+        p->killed=1;
+      }
+      else if(va>p->sz){
+        //printf("va > p->sz\n");
+        p->killed =1;
+      }
+      else if(va<p->trapframe->sp){
+        printf("stack overflow\n");
+        p->killed=1;
+      }
+      else{
+          if(uvmalloc(p->pagetable,PGROUNDDOWN(va),PGROUNDDOWN(va)+PGSIZE)==0){
+            printf("uvmalloc: out-of-memory\n");
+            p->killed = 1;
+          }
+      }
+      
+    }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

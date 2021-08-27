@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include"spinlock.h"
+#include"proc.h"
 
 /*
  * the kernel's page table.
@@ -96,15 +98,28 @@ walkaddr(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
   uint64 pa;
-
+  struct  proc* p = myproc();
+  
   if(va >= MAXVA)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+  if(pte == 0||(*pte & PTE_V) == 0){
+    if(p->sz<=va){
+      //printf("walkaddr:va>=sz\n");
+      return 0;
+    }
+    else if(va<p->trapframe->sp){
+      printf("walkaddr: stack over flow\n");
+      return 0;
+    }
+    else if(uvmalloc(pagetable,PGROUNDDOWN(va),PGROUNDDOWN(va)+PGSIZE)==0){
+      printf("walkaddr: out of memeory\n");
+      return 0;
+    }
+      pte = walk(pagetable, va, 0);
+  }
+
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
@@ -181,9 +196,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+      //panic("uvmunmap: walk");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      //panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -256,18 +273,18 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 // need to be less than oldsz.  oldsz can be larger than the actual
 // process size.  Returns the new process size.
 uint64
-uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
-{
-  if(newsz >= oldsz)
-    return oldsz;
+        uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+        {
+          if(newsz >= oldsz)
+            return oldsz;
 
-  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
-    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
-  }
+          if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+            int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+            uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+          }
 
-  return newsz;
-}
+          return newsz;
+        }
 
 // Recursively free page-table pages.
 // All leaf mappings must already have been removed.
@@ -315,9 +332,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      //panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      //panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
