@@ -69,8 +69,21 @@ usertrap(void)
   else if(r_scause()==13||r_scause()==15){
     uint64 va = r_stval();
     pte_t *pte = walk(p->pagetable,PGROUNDDOWN(va),0);
-    uint flags = PTE_FLAGS(*pte);
-    if(pte!=0&&va<MAXVA&&flags&PTE_COW){
+    uint flags;
+    if(pte==0){
+      //printf("walk failed\n");
+      p->killed =-1;
+    }
+    else if(*pte ==0 ){
+      //printf("pa==0\n");
+      p->killed = -1;
+    }
+    else if (va <= PGROUNDDOWN(p->trapframe->sp) && va >= PGROUNDDOWN(p->trapframe->sp) - PGSIZE)
+      {
+      	//printf("stackoverflow\n");
+        p->killed = 1;
+      }
+    else if(pte!=0&&va<MAXVA&&(flags= PTE_FLAGS(*pte))&PTE_COW){
       uint64 pa=PTE2PA(*pte);
       int ref = get_refNum(pa);
       if(ref==1){

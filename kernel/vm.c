@@ -228,6 +228,9 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     {
       kfree((void *)pa);
     }
+    else{
+      //dec_refNum((uint64)pa);
+    }
     *pte = 0;
   }
 }
@@ -364,12 +367,13 @@ int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     flags = PTE_FLAGS(*pte);
     //reference count ++
     inc_refNum(pa);
+    //if the parent page can be writen, set it as cow page
     if (flags & PTE_W)
     {
       flags = (flags | PTE_COW) & (~PTE_W);
       *pte = PA2PTE(pa) | flags;
     }
-
+    //create new mappage in new page table for child process
     if (mappages(new, i, PGSIZE, pa, flags) != 0)
     {
       //linked new to the old pa with new flags
