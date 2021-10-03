@@ -25,6 +25,20 @@ barrier_init(void)
 static void 
 barrier()
 {
+  pthread_mutex_lock(&bstate.barrier_mutex); 
+  if(++(bstate.nthread)!=nthread){
+    pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);  // go to sleep on cond, releasing lock mutex, acquiring upon wake up
+    pthread_mutex_unlock(&bstate.barrier_mutex); 
+
+  }
+    
+  else{
+    bstate.round++;
+    bstate.nthread=0;
+    pthread_mutex_unlock(&bstate.barrier_mutex); 
+    pthread_cond_broadcast(&bstate.barrier_cond); 
+    
+  }     // wake up every thread sleeping on cond
   // YOUR CODE HERE
   //
   // Block until all threads have called barrier() and

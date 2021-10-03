@@ -1,0 +1,5 @@
+1. thread_switch needs to save/restore only the callee-save registers. Why?
+it is the Caller's responsibility to save caller-save registers, as callee switch doesn't have to do that.
+2. Why are there missing keys with 2 threads, but not with 1 thread? Identify a sequence of events with 2 threads that can lead to a key being missing. 
+when one thread's insert function hasn't update its head, while another thread's insert function begins, so the parameter table[i] is the former one. 
+Thus hashtable loses the key added in the first thread. 

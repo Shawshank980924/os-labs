@@ -7,7 +7,23 @@
 
 #define NBUCKET 5
 #define NKEYS 100000
+/**
+ * 
 
+To avoid this sequence of events, insert lock and unlock statements in put and get in notxv6/ph.c so that the number of keys missing is always 0 with two threads. The relevant pthread calls are:
+
+pthread_mutex_t lock;            // declare a lock
+pthread_mutex_init(&lock, NULL); // initialize the lock
+pthread_mutex_lock(&lock);       // acquire lock
+pthread_mutex_unlock(&lock);     // release lock
+
+You're done when make grade says that your code passes the ph_safe test, which requires zero missing keys with two threads. It's OK at this point to fail the ph_fast test. 
+ * 
+*/
+
+// while(__sync_lock_test_and_set(&lk->locked, 1) != 0)
+//     ;
+pthread_mutex_t lock;            // declare a lock
 struct entry {
   int key;
   int value;
@@ -51,8 +67,11 @@ void put(int key, int value)
     e->value = value;
   } else {
     // the new is new.
-    insert(key, value, &table[i], table[i]);
+    pthread_mutex_lock(&lock);       // acquire lock
+    insert(key, value, &table[i], table[i]);//insert at the head
+    pthread_mutex_unlock(&lock);     // release lock
   }
+ 
 }
 
 static struct entry*
@@ -107,6 +126,7 @@ main(int argc, char *argv[])
     fprintf(stderr, "Usage: %s nthreads\n", argv[0]);
     exit(-1);
   }
+  pthread_mutex_init(&lock, NULL); // initialize the lock
   nthread = atoi(argv[1]);
   tha = malloc(sizeof(pthread_t) * nthread);
   srandom(0);
