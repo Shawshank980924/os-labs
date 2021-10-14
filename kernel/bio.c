@@ -22,16 +22,19 @@
 #include "defs.h"
 #include "fs.h"
 #include "buf.h"
-
+#define NBUCKET 13
 struct {
   struct spinlock lock;
   struct buf buf[NBUF];
-
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
+  
 } bcache;
+struct {
+    struct spinlock lock;
+    struct buf head;
+}bucket[NBUCKET];
 
 void
 binit(void)
@@ -39,17 +42,23 @@ binit(void)
   struct buf *b;
 
   initlock(&bcache.lock, "bcache");
-
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+  for(int i=0;i<NBUCKET;i++){
+    //初始化桶内的头节点为双端链表
+    bucket[i].head.next=&bucket[i].head;
+    bucket[i].head.prev=&bucket[i].head;
+    //初始化每个桶的锁
+    initlock(&bucket[i].lock,"bucket");
+    //按取余的方式将buffer平均分配在每个桶中
+    //采用头插法
+    for(b = bcache.buf+i; b < bcache.buf+NBUF; b+=NBUCKET){
+      initsleeplock(&b->lock, "buffer");
+      b->next=bucket[i].head.next;
+      b->prev = &bucket[i].head;
+      bucket[i].head.next = b;
+      bucket[i].head.next->prev = b;
+    }
   }
+  
 }
 
 // Look through buffer cache for block on device dev.
@@ -60,31 +69,100 @@ bget(uint dev, uint blockno)
 {
   struct buf *b;
 
-  acquire(&bcache.lock);
+  int needIndex = blockno%NBUCKET;
+  acquire(&bucket[needIndex].lock);
 
   // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+  //先在自己的桶内查找，是否有dev和blockno对应的桶
+  for(b = bucket[needIndex].head.next; b != &bucket[needIndex].head; b = b->next){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
+      release(&bucket[needIndex].lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
+  }
+
+  //查找未果，进入淘汰阶段，查找lru空闲buffer进行替换
+  //为保证查找和淘汰的原子性以及防止死锁，先释放needIndex的桶锁，然后获取大锁bcache lock
+  //再获取needIndex的锁，防止其他进程再释放锁之后更新了桶内的buffer，需要对桶内进行第二次查找
+  release(&bucket[needIndex].lock);
+  acquire(&bcache.lock);
+  acquire(&bucket[needIndex].lock);
+  for(b = bucket[needIndex].head.next; b != &bucket[needIndex].head; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){
+      b->refcnt++;
+      release(&bucket[needIndex].lock);
       release(&bcache.lock);
       acquiresleep(&b->lock);
       return b;
     }
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
+  //若在needIndex二次查找未果，进入淘汰
+  //先在needIndex的桶内寻找空闲的lruBuffer
+  struct buf* lruBuf=0;
+  for(b = bucket[needIndex].head.next; b != &bucket[needIndex].head; b = b->next){
+    //找到桶内时间戳最小的空闲buffer
+    if(b->refcnt==0&&(lruBuf==0||lruBuf->timestamp>b->timestamp))lruBuf = b;
+    //时间戳为0说明该buffer初始化后还未使用，必为lru空闲buffer
+    if(lruBuf!=0&&lruBuf->timestamp==0)break;
   }
+  //若在needIndex桶中找到lruBuffer，重置相关参数
+  if(lruBuf){
+    lruBuf->dev = dev;
+    lruBuf->blockno = blockno;
+    lruBuf->valid = 0;
+    lruBuf->refcnt = 1;
+    release(&bucket[needIndex].lock);
+    release(&bcache.lock);
+    acquiresleep(&lruBuf->lock);
+    return lruBuf;
+  }
+
+  //若needIndex桶内没有找到lru空闲buffer需要去别的桶中偷
+  for(int i=0;i<NBUCKET;i++){
+    //碰到needIndex 跳过
+    if(i==needIndex)continue;
+    acquire(&bucket[i].lock);
+    lruBuf=0;
+    for(b = bucket[i].head.next; b != &bucket[i].head; b = b->next){
+      //找到桶内时间戳最小的空闲buffer
+      if(b->refcnt==0&&(lruBuf==0||lruBuf->timestamp>b->timestamp))lruBuf = b;
+      //时间戳为0说明该buffer初始化后还未使用，必为lru空闲buffer
+      if(lruBuf&&lruBuf->timestamp==0)break;
+    }
+
+    //若i桶内存在空闲lruBuf，先把它从i桶中取出来，然后插入needIndex桶中（头插），最后更新参数
+    if(lruBuf){
+      //取出lrubuf
+      lruBuf->prev->next = lruBuf->next;
+      lruBuf->next->prev = lruBuf->prev;
+      release(&bucket[i].lock);
+
+      //插入needIndex桶内，头插法
+      lruBuf->next = bucket[needIndex].head.next;
+      lruBuf->prev = &bucket[needIndex].head;
+      bucket[needIndex].head.next->prev = lruBuf;
+      bucket[needIndex].head.next = lruBuf;
+
+      //重置参数
+      lruBuf->dev = dev;
+      lruBuf->blockno = blockno;
+      lruBuf->valid = 0;
+      lruBuf->refcnt = 1;
+      release(&bucket[needIndex].lock);
+      release(&bcache.lock);
+      acquiresleep(&lruBuf->lock);
+      return lruBuf;
+    }
+
+    //i桶中查找空闲lrubuf未果，释放i桶的锁，查找下一个桶
+    release(&bucket[i].lock);
+
+
+  }
+  //所有的buffer都在被进程使用，找不到lru空闲buf，返回panic
   panic("bget: no buffers");
 }
 
@@ -120,34 +198,31 @@ brelse(struct buf *b)
     panic("brelse");
 
   releasesleep(&b->lock);
-
-  acquire(&bcache.lock);
+  int index = b->blockno%NBUCKET;
+  acquire(&bucket[index].lock);
   b->refcnt--;
   if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    //buffer引用计数为0，进入空闲状态，重置时间戳
+    b->timestamp = ticks;
   }
   
-  release(&bcache.lock);
+  release(&bucket[index].lock);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int index = b->blockno%NBUCKET;
+  acquire(&bucket[index].lock);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bucket[index].lock);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int index = b->blockno%NBUCKET;
+  acquire(&bucket[index].lock);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bucket[index].lock);
 }
 
 

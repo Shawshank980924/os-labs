@@ -10,9 +10,9 @@
 #include "defs.h"
 #include "proc.h"
 
-void freerange(void *pa_start, void *pa_end,int i);
-void* actual_kalloc(int idx);
-void actual_kfree(void* pa,int idx);
+void freerange(void *pa_start, void *pa_end);
+// void* actual_kalloc(int idx);
+// void actual_kfree(void* pa,int idx);
 //extern int cpuid();
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -40,18 +40,18 @@ kinit()
   // evenly divide the free pages
   avg = (PHYSTOP - (uint64)end) / NCPU;
   for (p = (uint64)end; p <= PHYSTOP; p += avg) {
-    freerange((void*)p,p+avg < PHYSTOP ? (void*)(p+avg):(void*)PHYSTOP, i);
+    freerange((void*)p,p+avg < PHYSTOP ? (void*)(p+avg):(void*)PHYSTOP);
     i++;
   }
 }
 
 void
-freerange(void *pa_start, void *pa_end, int i)
+freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    actual_kfree(p,i);
+    kfree(p);
 }
 void
 kfree(void *pa)
@@ -62,47 +62,53 @@ kfree(void *pa)
   push_off();
   id = cpuid();
   pop_off();
-  actual_kfree(pa,id);
-}
-
-void actual_kfree(void* pa,int idx) {
   struct run *r;
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
 
-  acquire(&kmem[idx].lock);
-  r->next = kmem[idx].freelist;
-  kmem[idx].freelist = r;
-  release(&kmem[idx].lock);
+  acquire(&kmem[id].lock);
+  r->next = kmem[id].freelist;
+  kmem[id].freelist = r;
+  release(&kmem[id].lock);
+  
 }
 
 void *
 kalloc(void)
 {
-  void* pa;
   int id;
   push_off();
   id = cpuid();
   pop_off();
-  pa = actual_kalloc(id);
-  if (pa) return pa;
-  for (int i = 0; i < NCPU; i++) {
-    pa = actual_kalloc(i);
-    if (pa) return pa;
+  struct run *r;
+  //先在自己的freelist里面找
+  acquire(&kmem[id].lock);
+  r = kmem[id].freelist;
+  if(r)
+    kmem[id].freelist = r->next;
+  release(&kmem[id].lock);//注意提前释放锁防止死锁
+  if(r){
+    memset((char*)r, 5, PGSIZE); // fill with junk
+    return (void*)r;
   }
+    
+
+  //自己freelist里面没有空白页就在其他cpu的空白页里面找
+  for (int i = 0; i < NCPU; i++) {
+    acquire(&kmem[i].lock);
+    r = kmem[i].freelist;
+    if(r)
+      kmem[i].freelist = r->next;
+    release(&kmem[i].lock);
+    if(r){
+      memset((char*)r, 5, PGSIZE); // fill with junk
+      return (void*)r;
+    }
+      
+  }
+  //都没找到返回零
   return 0;
 }
 
-void* actual_kalloc(int idx) {
-  struct run *r;
-  acquire(&kmem[idx].lock);
-  r = kmem[idx].freelist;
-  if(r)
-    kmem[idx].freelist = r->next;
-  release(&kmem[idx].lock);
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
-  return (void*)r;
-}
