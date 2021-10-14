@@ -10,7 +10,9 @@
 #include "defs.h"
 #include "proc.h"
 
-void freerange(void *pa_start, void *pa_end);
+void freerange(void *pa_start, void *pa_end,int i);
+void* actual_kalloc(int idx);
+void actual_kfree(void* pa,int idx);
 //extern int cpuid();
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -20,93 +22,87 @@ struct run
   struct run *next;
 };
 
-struct
-{
+
+struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem[NCPU];
 
-void kinit()
+void
+kinit()
 {
-  uint64 aver = (PHYSTOP - (uint64)end) / NCPU;
-  char *start = end;
-  for (int i = 0; i < NCPU; i++)
-  {
+  uint64 avg;
+  uint64 p;
+  int i = 0;
+  for (int i = 0; i < NCPU; i++) {
     initlock(&kmem[i].lock, "kmem");
-    freerange(start, (uint64)start + aver < PHYSTOP ? (void *)(start + aver) : (void *)PHYSTOP);
-    start += aver;
+  }
+  // evenly divide the free pages
+  avg = (PHYSTOP - (uint64)end) / NCPU;
+  for (p = (uint64)end; p <= PHYSTOP; p += avg) {
+    freerange((void*)p,p+avg < PHYSTOP ? (void*)(p+avg):(void*)PHYSTOP, i);
+    i++;
   }
 }
 
-void freerange(void *pa_start, void *pa_end)
+void
+freerange(void *pa_start, void *pa_end, int i)
 {
   char *p;
-  p = (char *)PGROUNDUP((uint64)pa_start);
-  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
-    kfree(p);
+  p = (char*)PGROUNDUP((uint64)pa_start);
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+    actual_kfree(p,i);
+}
+void
+kfree(void *pa)
+{ 
+  int id;
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
+  push_off();
+  id = cpuid();
+  pop_off();
+  actual_kfree(pa,id);
 }
 
-// Free the page of physical memory pointed at by v,
-// which normally should have been returned by a
-// call to kalloc().  (The exception is when
-// initializing the allocator; see kinit above.)
-void kfree(void *pa)
-{
+void actual_kfree(void* pa,int idx) {
   struct run *r;
-
-  if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
-
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
-  r = (struct run *)pa;
-  push_off();
-  int id = cpuid();
-  pop_off();
-  acquire(&kmem[id].lock);
-  r->next = kmem[id].freelist;
-  kmem[id].freelist = r;
-  release(&kmem[id].lock);
+  r = (struct run*)pa;
+
+  acquire(&kmem[idx].lock);
+  r->next = kmem[idx].freelist;
+  kmem[idx].freelist = r;
+  release(&kmem[idx].lock);
 }
 
-// Allocate one 4096-byte page of physical memory.
-// Returns a pointer that the kernel can use.
-// Returns 0 if the memory cannot be allocated.
-void* kalloc(void)
+void *
+kalloc(void)
 {
-  struct run *r;
+  void* pa;
+  int id;
   push_off();
-  int id = cpuid();
+  id = cpuid();
   pop_off();
-//先在自己的freelist的空白页中找
-  acquire(&kmem[id].lock);
-  r = kmem[id].freelist;
-    //找到了，从自己的freelist中把这页拿出来，更新freelist
-  if (r){
-    kmem[id].freelist = r->next;
-    memset((char *)r, 5, PGSIZE); // fill with junk
-    release(&kmem[id].lock);//先释放本锁，再获取别的锁防止获取多把锁造成死锁的可能性
+  pa = actual_kalloc(id);
+  if (pa) return pa;
+  for (int i = 0; i < NCPU; i++) {
+    pa = actual_kalloc(i);
+    if (pa) return pa;
   }
-    //找不到就在其他cpu的freelist上面找
-  else
-  {
-    release(&kmem[id].lock);
-    for (int i = 0; i < NCPU; i++)
-    {
-      if (i == id)//跳过遍历到自己
-        continue;
-      acquire(&kmem[i].lock);
-      r = kmem[i].freelist;
-      if (r){
-          kmem[i].freelist = r->next;
-      	  release(&kmem[i].lock);
-          memset((char *)r, 5, PGSIZE); // fill with junk
-          break;
-      }  
-        release(&kmem[i].lock);
-    }
-  }
-  
-  return (void *)r;
+  return 0;
+}
+
+void* actual_kalloc(int idx) {
+  struct run *r;
+  acquire(&kmem[idx].lock);
+  r = kmem[idx].freelist;
+  if(r)
+    kmem[idx].freelist = r->next;
+  release(&kmem[idx].lock);
+  if(r)
+    memset((char*)r, 5, PGSIZE); // fill with junk
+  return (void*)r;
 }
