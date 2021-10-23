@@ -104,6 +104,7 @@ kalloc(void)
   if(pa)
     return pa;
 
+
   //自己freelist里面没有空白页就在其他cpu的freelist里面去偷
   for (int i = 0; i < NCPU; i++) {
     if(i==id)continue;

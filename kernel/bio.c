@@ -72,6 +72,7 @@ bget(uint dev, uint blockno)
   int needIndex = blockno%NBUCKET;
   acquire(&bucket[needIndex].lock);
 
+
   // Is the block already cached?
   //先在自己的桶内查找，是否有dev和blockno对应的桶
   for(b = bucket[needIndex].head.next; b != &bucket[needIndex].head; b = b->next){
