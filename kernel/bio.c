@@ -54,8 +54,8 @@ binit(void)
       initsleeplock(&b->lock, "buffer");
       b->next=bucket[i].head.next;
       b->prev = &bucket[i].head;
-      bucket[i].head.next = b;
-      bucket[i].head.next->prev = b;
+      b->prev->next = b;
+      b->next->prev = b;
     }
   }
   
@@ -222,6 +222,10 @@ bunpin(struct buf *b) {
   int index = b->blockno%NBUCKET;
   acquire(&bucket[index].lock);
   b->refcnt--;
+  if (b->refcnt == 0) {
+    //buffer引用计数为0，进入空闲状态，重置时间戳
+    b->timestamp = ticks;
+  }
   release(&bucket[index].lock);
 }
 

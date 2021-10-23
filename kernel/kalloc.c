@@ -9,8 +9,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "proc.h"
-
-void freerange(void *pa_start, void *pa_end);
+void kfree_on_cpuid(void* pa,int id);
+void freerange(void *pa_start, void *pa_end,int i);
 // void* actual_kalloc(int idx);
 // void actual_kfree(void* pa,int idx);
 //extern int cpuid();
@@ -37,21 +37,46 @@ kinit()
   for (int i = 0; i < NCPU; i++) {
     initlock(&kmem[i].lock, "kmem");
   }
-  // evenly divide the free pages
+  // avg是每个cpu分配的空白物理页地址范围大小
   avg = (PHYSTOP - (uint64)end) / NCPU;
   for (p = (uint64)end; p <= PHYSTOP; p += avg) {
-    freerange((void*)p,p+avg < PHYSTOP ? (void*)(p+avg):(void*)PHYSTOP);
+    //给cpuid为i的cpu所属freelist分配空白物理页
+    freerange((void*)p,p+avg < PHYSTOP ? (void*)(p+avg):(void*)PHYSTOP,i);
     i++;
   }
 }
 
 void
-freerange(void *pa_start, void *pa_end)
+freerange(void *pa_start, void *pa_end,int id)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+    kfree_on_cpuid(p,id);
+}
+void* kalloc_on_cpuid(int id){
+  struct run *r;
+  acquire(&kmem[id].lock);
+  r = kmem[id].freelist;
+  if(r)
+    kmem[id].freelist = r->next;
+  release(&kmem[id].lock);
+  if(r){
+    memset((char*)r, 5, PGSIZE); // fill with junk
+  }
+  return (void*)r;
+}
+void kfree_on_cpuid(void* pa,int id){
+  struct run *r;
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run*)pa;
+  //插入空白页，并更新freelist头指针
+  acquire(&kmem[id].lock);
+  r->next = kmem[id].freelist;
+  kmem[id].freelist = r;
+  release(&kmem[id].lock);
 }
 void
 kfree(void *pa)
@@ -62,16 +87,7 @@ kfree(void *pa)
   push_off();
   id = cpuid();
   pop_off();
-  struct run *r;
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-
-  r = (struct run*)pa;
-
-  acquire(&kmem[id].lock);
-  r->next = kmem[id].freelist;
-  kmem[id].freelist = r;
-  release(&kmem[id].lock);
+  kfree_on_cpuid(pa,id);
   
 }
 
@@ -79,33 +95,21 @@ void *
 kalloc(void)
 {
   int id;
+  void* pa;
   push_off();
   id = cpuid();
   pop_off();
-  struct run *r;
-  //先在自己的freelist里面找
-  acquire(&kmem[id].lock);
-  r = kmem[id].freelist;
-  if(r)
-    kmem[id].freelist = r->next;
-  release(&kmem[id].lock);//注意提前释放锁防止死锁
-  if(r){
-    memset((char*)r, 5, PGSIZE); // fill with junk
-    return (void*)r;
-  }
-    
+  //先在自己的freelist里面找有无空白页
+  pa = kalloc_on_cpuid(id);
+  if(pa)
+    return pa;
 
-  //自己freelist里面没有空白页就在其他cpu的空白页里面找
+  //自己freelist里面没有空白页就在其他cpu的freelist里面去偷
   for (int i = 0; i < NCPU; i++) {
-    acquire(&kmem[i].lock);
-    r = kmem[i].freelist;
-    if(r)
-      kmem[i].freelist = r->next;
-    release(&kmem[i].lock);
-    if(r){
-      memset((char*)r, 5, PGSIZE); // fill with junk
-      return (void*)r;
-    }
+    if(i==id)continue;
+    pa = kalloc_on_cpuid(i);
+    if(pa)
+      return pa;
       
   }
   //都没找到返回零
