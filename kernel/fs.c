@@ -386,19 +386,48 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
   bn -= NDIRECT;
-
-  if(bn < NINDIRECT){
+  //当访问的是一级indirect block索引时
+  if(bn < BSIZE / sizeof(uint)){
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0)
+    if((addr = ip->addrs[NDIRECT]) == 0)//第一次访问indirect block还未分配
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
+    bp = bread(ip->dev, addr);//返回一个该indirect block缓存块用于读取和写入
+    a = (uint*)bp->data;//indirect block buffer 数据起点地址，一条地址对应一个direct block的block number
+    if((addr = a[bn]) == 0){//该direct block 还未分配
       a[bn] = addr = balloc(ip->dev);
       log_write(bp);
     }
-    brelse(bp);
+    brelse(bp);//已经找到了direct block的地址 释放indirect block的睡眠锁
     return addr;
+  }
+
+  //当访问的是二级indirect block索引时
+  bn -= BSIZE / sizeof(uint);
+  uint block_uints = BSIZE / sizeof(uint);
+  if(bn < block_uints*block_uints){
+    if((addr = ip->addrs[NDIRECT+1]) == 0)//第一次访问二级indirect block还未分配
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+    bp = bread(ip->dev, addr);//返回一个该indirect block缓存块用于读取和写入
+    //确定bn对应的哪个一级indirect block
+    uint n = bn /block_uints;
+    bn = bn % block_uints;
+    a = (uint*)bp->data;//二级indirect block buffer 数据起点地址，一条地址对应一个indirect block的block number
+    if((addr = a[n]) == 0){//该indirect block 还未分配
+      a[n] = addr = balloc(ip->dev);//一级索引block的blocknum
+      log_write(bp);
+    }
+    brelse(bp);//已经找到了一级indirect block的地址 释放二级indirect block的睡眠锁
+
+    bp = bread(ip->dev, addr);//返回一个该一级索引indirect block缓存块用于读取和写入
+    //确定bn对应的哪个direct block
+    a = (uint*)bp->data;//一级indirect block buffer 数据起点地址，一条地址对应一个direct block的block number
+    if((addr = a[bn]) == 0){//该direct block 还未分配
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);//已经找到了一级indirect block的地址 释放二级indirect block的睡眠锁
+    return addr;
+
   }
 
   panic("bmap: out of range");
@@ -409,9 +438,10 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, m;
+  struct buf *bp,*bpp;
+  uint *a,*b;
+  uint block_uints = BSIZE / sizeof(uint);
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -423,13 +453,35 @@ itrunc(struct inode *ip)
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
+    for(j = 0; j < block_uints; j++){
       if(a[j])
         bfree(ip->dev, a[j]);
     }
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(j = 0; j < block_uints; j++){
+      if(a[j]){
+        bpp = bread(ip->dev,a[j]);
+        b = (uint*)bpp->data;
+        for ( m = 0; m < block_uints; m++)
+        {
+          if(b[m])
+            bfree(ip->dev,b[m]);
+        }
+        brelse(bpp);
+        bfree(ip->dev, a[j]);
+      }
+        
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;

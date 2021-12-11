@@ -249,10 +249,10 @@ balloc(int used)
   int i;
 
   printf("balloc: first %d blocks have been allocated\n", used);
-  assert(used < BSIZE*8);
+  assert(used < BSIZE*8);//用过块数超过1024*8就要报错
   bzero(buf, BSIZE);
   for(i = 0; i < used; i++){
-    buf[i/8] = buf[i/8] | (0x1 << (i%8));
+    buf[i/8] = buf[i/8] | (0x1 << (i%8));//位运算表示该块已经被占用
   }
   printf("balloc: write bitmap block at sector %d\n", sb.bmapstart);
   wsect(sb.bmapstart, buf);
