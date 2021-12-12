@@ -442,48 +442,55 @@ itrunc(struct inode *ip)
   struct buf *bp,*bpp;
   uint *a,*b;
   uint block_uints = BSIZE / sizeof(uint);
-
+  //释放直接索引块，addres置零视为无效
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
       ip->addrs[i] = 0;
     }
   }
-
+//释放一级间接索引块
   if(ip->addrs[NDIRECT]){
+    //获取间接索引块buf缓存指针
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
+    //以uint大小为单位读取直接索引块的块号，一一释放
     for(j = 0; j < block_uints; j++){
       if(a[j])
         bfree(ip->dev, a[j]);
     }
     brelse(bp);
+    //释放间接索引块
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
-
+//ip位于二级索引块的数据块号区间
   if(ip->addrs[NDIRECT+1]){
     bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
     a = (uint*)bp->data;
     for(j = 0; j < block_uints; j++){
       if(a[j]){
+        //一一获取一级索引块的块号，根据块号得到该块buf指针
         bpp = bread(ip->dev,a[j]);
         b = (uint*)bpp->data;
+        //同之前一级索引块的操作
         for ( m = 0; m < block_uints; m++)
         {
           if(b[m])
             bfree(ip->dev,b[m]);
         }
+        //释放一级索引块锁以及标记为未使用块
         brelse(bpp);
         bfree(ip->dev, a[j]);
       }
         
     }
+    //最后释放二级索引块
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT+1]);
     ip->addrs[NDIRECT+1] = 0;
   }
-
+  //数据块全部释放，重置inode size，inode信息写入磁盘inode块更新
   ip->size = 0;
   iupdate(ip);
 }

@@ -115,6 +115,7 @@ sys_fstat(void)
   return filestat(f, st);
 }
 
+
 // Create the path new as a link to the same inode as old.
 uint64
 sys_link(void)
@@ -282,38 +283,102 @@ create(char *path, short type, short major, short minor)
 
   return ip;
 }
+uint64
+symlink(void){
+  char path[MAXPATH];
+  char target[MAXPATH];
+  struct inode *dp;
+  int n;
+  begin_op();
+  if((n = argstr(0, target, MAXPATH)) < 0 || argstr(0, path, MAXPATH) < 0)
+    return -1;
+  
+  //创建symlink的inode
+  if((dp = create(path, T_SYMLINK, 0, 0))==0){
+    end_op();
+    return -1;
+  }
+  //在数据块中写入targetpath
+   if(writei(dp,0,(uint64)target,0,MAXPATH)!=MAXPATH){
+     panic("symlink:writei panic");
+     end_op();
+    return -1;
+   } 
+   iunlock(dp);//create 返回后inode是上锁的状态，读写完要释放锁
+   end_op();
+   return 0;
+}
 
 uint64
 sys_open(void)
 {
   char path[MAXPATH];
+  // char target_path[MAXPATH];
   int fd, omode;
   struct file *f;
-  struct inode *ip;
+  struct inode *ip, *dp;
   int n;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
     return -1;
 
   begin_op();
-
+  //以创建文件的方式打开，那么就要先创建文件
   if(omode & O_CREATE){
+    //create返回一个inode缓存结构指针
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
   } else {
+    //不是以创建的方式打开
+    //根据路径查找文件，返回inode缓存指针
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
     }
+    //打开文件需要改变inode的引用计数，所以必须对于inode加锁
     ilock(ip);
+    //目录文件只能以只读的方式打开
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
       return -1;
     }
+    if(!(omode&O_NOFOLLOW)){
+      //如果是不以O_NOFOLLOW方式打开，那么就得到的inode必须不是T_NOFOLLOW类型的文件而是T_FILE
+      //需要不断套娃找
+      //int readi(struct inode *ip, char *dst, uint off, uint n)
+      int num = 0;
+      while(ip->type==T_SYMLINK){
+        if(num>=10){
+          printf("recursively follow more than 10 ");
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        //readi进行读取inode的内容
+        if(readi(ip,0,(uint64)path,0,MAXPATH)==0){
+          printf("%s readi 读取失败",path);
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        //返回path对应的inode缓存指针
+        if((dp = namei(path))==0){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        //换inode引用前面的锁要释放
+        iunlock(ip);
+        ip =dp;
+        ilock(ip);
+      }
+      
+    }
+
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
@@ -484,3 +549,4 @@ sys_pipe(void)
   }
   return 0;
 }
+
