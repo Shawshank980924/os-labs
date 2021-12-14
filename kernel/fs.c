@@ -71,16 +71,18 @@ balloc(uint dev)
   for(b = 0; b < sb.size; b += BPB){
     bp = bread(dev, BBLOCK(b, sb));
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
+      //因为buf的data[]的数据长度单位是字节
+      //所以是按8位取，位运算也是8位一起比
       m = 1 << (bi % 8);
-      if((bp->data[bi/8] & m) == 0){  // Is block free?
-        bp->data[bi/8] |= m;  // Mark block in use.
-        log_write(bp);
-        brelse(bp);
-        bzero(dev, b + bi);
+      if((bp->data[bi/8] & m) == 0){  //bi在位图块中的对应的二进制位为0说明空闲块
+        bp->data[bi/8] |= m;  // Mark block in use.标记为使用
+        log_write(bp);//改动了bitmap块的内容，确保该块有匹配的日志块，并标记脏位
+        brelse(bp);//释放位图块的睡眠锁
+        bzero(dev, b + bi);//初始化刚刚标记使用的空闲块
         return b + bi;
       }
     }
-    brelse(bp);
+    brelse(bp);//没有空闲块
   }
   panic("balloc: out of blocks");
 }
