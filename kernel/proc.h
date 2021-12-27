@@ -82,6 +82,18 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+//VMA结构体用于记录该进程mmap映射的进程地址和文件相关内容
+struct vma{
+  int length;//连续映射的虚拟地址长度
+  int vstart;
+  int prot;//保护位 PROT_READ、PROT_WRITE或两者都有,用于确定pte中的flag
+  int flag;//MAP_SHARED，意味对映射内存的修改应该被写回文件,注意此时要用锁；MAP_PRIVATE，意味着它们不会写回到文件
+  int fd;//文件描述符
+  struct file* file;//fd对应的文件结构体
+  int offset ;//用于记录写回文件的偏移量
+};
+
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -103,4 +115,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma vmas[MAXVMAS];
 };

@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,11 +71,54 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  //若是缺页异常
+  else if (r_scause()==13||r_scause()==15)
+  {
+    uint64 va = r_stval();//获取缺页的用户态虚拟地址
+    //缺页地址超过进程分配的虚拟地址上限，杀掉进程
+    // printf("va:%d,pid:%d\n",va,myproc()->pid);
+    if(va>=p->sz){
+      // printf("va address > p->sz");
+      p->killed = 1;
+    } 
+    //遍历vmas数组中的结构体，找到虚拟地址范围符合的vma
+    int idx = -1;
+    struct proc* mp = myproc();
+    for(int i=0;i<MAXVMAS;i++){
+      struct vma vm = mp->vmas[i];
+      // printf("vstart:%d,length:%d\n",vm.vstart,vm.length);
+      if(vm.length!=0&&va>=vm.vstart&&va<vm.vstart+vm.length){
+        
+        idx = i;
+        break;
+      }
+    }
+    if(idx == -1){
+      p->killed = 1;
+      printf("not vma page fault\n");
+    }
+    else{
+      va = PGROUNDDOWN(va);
+      //给va所在的虚拟页分配物理页
+        struct vma vm = mp->vmas[idx];
+        //mmap_mappage(pagetable_t pagetable, struct inode *ip, uint64 offset, uint64 va,  int perm)
+        if(mmap_mappage(myproc()->pagetable, vm.file->ip, va-vm.vstart,va,vm.prot) != 0){
+          p->killed=1;
+        }
+        
+      
+    }
+  }
+  
+  
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
+    
   }
+  
 
   if(p->killed)
     exit(-1);

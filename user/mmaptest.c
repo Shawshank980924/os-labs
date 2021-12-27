@@ -39,7 +39,9 @@ _v1(char *p)
   int i;
   for (i = 0; i < PGSIZE*2; i++) {
     if (i < PGSIZE + (PGSIZE/2)) {
-      if (p[i] != 'A') {
+      // printf("%c",p[i]);
+      if (p[i] != 'A') {  
+
         printf("mismatch at %d, wanted 'A', got 0x%x\n", i, p[i]);
         err("v1 mismatch (1)");
       }
@@ -113,7 +115,7 @@ mmap_test(void)
   char *p = mmap(0, PGSIZE*2, PROT_READ, MAP_PRIVATE, fd, 0);
   if (p == MAP_FAILED)
     err("mmap (1)");
-  _v1(p);
+  _v1(p);//检测直接通过读取p所在的用户虚拟地址和写入f的内容是否相同
   if (munmap(p, PGSIZE*2) == -1)
     err("munmap (1)");
 
@@ -262,21 +264,29 @@ fork_test(void)
     err("open");
   unlink(f);
   char *p1 = mmap(0, PGSIZE*2, PROT_READ, MAP_SHARED, fd, 0);
+  // _v1(p1);
+  printf("p1 mmap\n");
+  
+  
   if (p1 == MAP_FAILED)
     err("mmap (4)");
   char *p2 = mmap(0, PGSIZE*2, PROT_READ, MAP_SHARED, fd, 0);
   if (p2 == MAP_FAILED)
     err("mmap (5)");
-
+  // _v1(p2);
+  printf("p2 mmap\n");
   // read just 2nd page.
   if(*(p1+PGSIZE) != 'A')
     err("fork mismatch (1)");
-
+  printf("parent read mmap\n");
+  // _v1(p1);
   if((pid = fork()) < 0)
     err("fork");
   if (pid == 0) {
-    _v1(p1);
+     _v1(p1);
+    printf("child check mmap\n");
     munmap(p1, PGSIZE); // just the first page
+    printf("munmap\n");
     exit(0); // tell the parent that the mapping looks OK.
   }
 

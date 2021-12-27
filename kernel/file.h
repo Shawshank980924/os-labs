@@ -1,3 +1,4 @@
+
 struct file {
   enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
   int ref; // reference count
@@ -12,6 +13,7 @@ struct file {
 #define major(dev)  ((dev) >> 16 & 0xFFFF)
 #define minor(dev)  ((dev) & 0xFFFF)
 #define	mkdev(m,n)  ((uint)((m)<<16| (n)))
+
 
 // in-memory copy of an inode
 struct inode {

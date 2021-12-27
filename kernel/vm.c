@@ -129,6 +129,32 @@ kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
   if(mappages(kpgtbl, va, sz, pa, perm) != 0)
     panic("kvmmap");
 }
+//给va分配一页物理页并在页表中映射，把磁盘中的文件内容读入到物理页中
+//pagetable:进程用户态页表
+//ip：文件结构体对应的inode指针
+//offset：拷贝文件内容的起始位置，相对于文件开头的相对位置
+//va：映射的用户虚拟地址起点
+//perm：页表中的pte的权限位
+int 
+mmap_mappage(pagetable_t pagetable, struct inode *ip, uint64 offset, uint64 va,  int perm){
+  pte_t *pte;
+  char* pa;
+  if((pte = walk(pagetable, va, 1)) == 0)
+      return -1;
+  if((pa = kalloc())==0){
+    return -1;
+  }
+  //kalloc中初始值为5，按测试文件的要求，当文件剩余长度不满1个page的时候，剩余的都要置零
+  memset((void*)pa,0,PGSIZE);
+  ilock(ip);
+  //readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
+  printf("offset :%d\n",offset);
+  readi(ip,0,(uint64)pa,offset,PGSIZE);//将文件中的内容读取到物理内存中
+  iunlock(ip);
+  //改动pte
+  *pte = PA2PTE(pa)|perm|PTE_U|PTE_V;
+  return 0;
+}
 
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
@@ -172,7 +198,8 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      // panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -306,7 +333,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    continue;
+      // panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)

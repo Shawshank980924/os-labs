@@ -5,8 +5,14 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
+
+// struct vma vmas[MAXVMAS];
 
 struct proc proc[NPROC];
 
@@ -48,6 +54,7 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->kstack = KSTACK((int) (p - proc));
+      
   }
 }
 
@@ -291,9 +298,31 @@ fork(void)
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
-  for(i = 0; i < NOFILE; i++)
+  for(i = 0; i < NOFILE; i++){
+    struct vma* vmp=0;
+    struct vma* vmc=0;
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
+      //根据题意fork以后子进程复刻父进程页表
+      //vma必须也要复制一份，否则缺页的时候
+      //handler找不到相应的vma也就找不到相应的文件
+    if(p->vmas[i].length!=0){
+      vmp = &(p->vmas[i]);
+      vmc = &(np->vmas[i]);
+      // printf("pid :%d, vmp->length:%d\n",myproc()->pid,vmp->length);
+      vmc->file = vmp->file;
+      vmc->fd = vmp->fd;
+      vmc->prot = vmp->prot;
+      vmc->flag = vmp->flag;
+      vmc->length = vmp->length;
+      vmc->offset = vmp->offset;
+      vmc->vstart = vmp->vstart;
+      //防止子进程vma虚拟地址munmap后把文件结构体也释放了
+      //所以必须vma内引用次数加一
+      filedup(vmc->file);
+    }
+  }
+    
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -340,10 +369,26 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  struct vma *vm =0;
 
   if(p == initproc)
     panic("init exiting");
-
+//取消进程所有vma所对应的地址映射，释放物理页内存
+  for(int i=0;i<MAXVMAS;i++){
+    if(p->vmas[i].file!=0){
+      vm = &p->vmas[i];
+      struct inode* ip = vm->file->ip;
+      if(vm->prot&PROT_WRITE&&vm->flag&MAP_SHARED){
+        begin_op();
+        ilock(ip);
+        writei(ip,1,vm->vstart,vm->offset,vm->length);
+        iunlock(ip);
+        end_op();
+      }
+      uvmunmap(p->pagetable,vm->vstart,vm->length/PGSIZE,1);
+      memset(vm,0,sizeof vm);
+    }
+  }
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -352,6 +397,7 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
+  
 
   begin_op();
   iput(p->cwd);

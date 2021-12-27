@@ -368,6 +368,134 @@ sys_mkdir(void)
 }
 
 uint64
+sys_mmap(void)
+{
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  // int offset;文件映射的起始位置，假设为0
+  struct file* f;
+  int perm=0;//用于记录PTE权限
+  //void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+  //取出所有的参数
+  //题目默认要求addr为0，所以addr不取出来了
+  if(
+     argint(1, &length) < 0 ||
+     argint(2, &prot) < 0 ||
+     argint(3, &flags) < 0 ||
+     argfd(4,&fd,&f)<0||//通过fd获取文件结构体指针
+    //  argint(5, &offset) < 0 ||
+     myproc()->sz+length>=MAXVA)
+    {
+    return 0xffffffffffffffff;
+  }
+  //给进程分配length个虚拟页但不分配物理页
+  length = PGROUNDUP(length);//向上取整page
+  uint64 oldsz = myproc()->sz;
+  uint64 newsz = oldsz+length;
+  myproc()->sz = newsz;
+  
+  //判断传入的prot 和flag参数是否符合文件的读写权限
+  if(prot&PROT_WRITE){
+    //若保护位可写，在MAP_SHARED情况下,要写回磁盘，文件必须是可写的
+    if((flags&MAP_SHARED)&&!f->writable){
+      return 0xffffffffffffffff;
+    }
+    perm |= PTE_W;//pte标记区域的物理页可写
+  }
+  if(prot&PROT_READ){
+    //若保护位可读，文件必须也是可读的
+    if(!f->readable){
+      return 0xffffffffffffffff;
+    }
+    perm |= PTE_R;//pte标记区域的物理页可读
+  }
+  
+  int i=0;
+  struct vma *v = 0;
+  for(;i<MAXVMAS;i++){
+    //在pcb的数组里面找到空闲的vma项
+    if(myproc()->vmas[i].file ==0){
+      v = &(myproc()->vmas[i]);
+      v->file = f;
+      v->fd = fd;
+      v->vstart = oldsz;
+      v->length = length;
+      v->prot = perm;
+      v->flag = flags;
+      v->offset = 0;
+      //防止还没实际读的时候，文件结构体被释放了需要增加文件引用次数
+      filedup(f);
+      break;
+    }
+  }
+  //没有空闲的vma
+  if(i == MAXVMAS){
+    myproc()->sz = oldsz;
+    printf("no empty vma");
+    return -1;
+  }
+  
+  return v->vstart;
+}
+/**
+ * @brief 
+ * int munmap(void* addr,size_t length)
+ * 
+ * @return uint64 
+ */
+uint64
+sys_munmap(void)
+{
+  int va;
+  int length;
+  if(argint(0,&va)<0||argint(1,&length)<0)return -1;
+  length = PGROUNDUP(length);
+  struct vma *vm;
+  int i=0;
+  int idx = -1;
+  struct inode* ip;
+  for(;i<MAXVMAS;i++){
+    //在pcb的数组里面找到va对应的vma
+    vm = &myproc()->vmas[i];
+    if(vm->file!=0&&va==vm->vstart){
+      //题目说明不会出现空洞，必然是从前往后释放故va == vm->vstart
+      idx = i;
+      break;
+    }
+  }
+    if(idx ==-1)return -1;
+    //如果是该页是可写页且MAP_SHARED,需要把该页写回再释放
+    if(vm->prot&PROT_WRITE&&vm->flag == MAP_SHARED){
+      //需要写入磁盘文件，所以涉及日志操作
+      ip = vm->file->ip;
+      begin_op();
+      ilock(ip);
+      writei(ip,1,va,vm->offset,length);
+      iunlock(ip);
+      end_op();
+    }
+
+
+  int npages = length/PGSIZE;
+  //取消在页表中这些地址映射
+  //注意需要修改uvmunmap，因为是懒分配，所以可能该地址还未分配物理页
+  //直接跳过即可
+  uvmunmap(myproc()->pagetable,va,npages,1);
+  //更新起始映射位置，注意需要保留文件的offset，以便map_shared释放后写回
+  vm->vstart += length;
+  vm->length -= length;
+  vm->offset += length;
+  if(vm->length==0){
+    //若vm所对应的物理页全部unmmap了，释放vm结构体
+    fileclose(vm->file);
+    memset(vm,0,sizeof vm);
+  }
+  
+  return 0;
+}
+uint64
 sys_mknod(void)
 {
   struct inode *ip;
@@ -484,3 +612,5 @@ sys_pipe(void)
   }
   return 0;
 }
+
+
